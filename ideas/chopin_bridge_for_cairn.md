@@ -46,8 +46,9 @@ Chopin is a research prototype that warns of breaking changes. The investment is
 
 ## Constraints
 
-- **Chopin hosting.** Teammates need one Chopin server reachable from their browsers: Bun, PostgreSQL, a GitHub App installed on the repository, HTTPS. It must run with `AGENT=on`, `HARNESS=remote`, and GitHub sign-in (not `AUTH_MODE=local`, which a machine-hosted Planner does not support). Teammates need pull access to view and push access to answer.
-- **No Copilot.** Under `HARNESS=remote` Chopin's server holds the document and its tools and the client runs the model, so model access is the maintainer's Claude subscription or API key.
+- **Everything runs on the maintainer's Mac; teammates come in through a tunnel** (the user). The Chopin server (Bun, PostgreSQL in Docker), the `chopin` connector, the bridge, and Claude Code all run on one Mac. Teammates reach the Chopin page through a Microsoft Dev Tunnel. The tunnel is opened with the maintainer's GitHub login (`devtunnel user login -g`) and is persistent (`devtunnel create`), so its `https://…devtunnels.ms` address stays the same across restarts and can be registered once as the GitHub App's homepage and callback and as Chopin's `APP_ORIGIN`. The tunnel allows anonymous access, because Chopin's own GitHub sign-in and repository-access checks are the gate; it exposes only Chopin's port. No Cloudflare, no paid hosting. The price is that the page is up only while the Mac is awake and connected, and the bridge says so wherever a teammate would otherwise wait silently.
+- **Chopin's settings.** `AGENT=on`, `HARNESS=remote`, GitHub App sign-in (not `AUTH_MODE=local`, which a machine-hosted Planner does not support), and a decisions-classifier key, which Chopin requires whenever `AGENT=on` (it refuses to start without one) and uses for its small typed judgments: turn-taking, visual routing, titles, and build gates. Claude cannot fill this slot: Chopin takes only a classifier-type model from Atomic's registry, and the registry has no Claude classifier. The classifier is OpenAI's `openai-decisions/gpt-6-luna` through `OPENAI_API_KEY` for now (the user), with `DECISIONS_MODEL` left unset. Once a `JEV_API_KEY` is set up, Chopin picks `typesafe/jev-latest` automatically, since its config prefers Jev when that key is present. Teammates need pull access to view and push access to answer.
+- **Claude is the maintainer's installed Claude Code** (the user). The bridge drives it through the Claude Agent SDK with `pathToClaudeCodeExecutable` pointing at the installed `claude`, so it runs under the maintainer's own Claude login and settings, with Cairn loaded as a local plugin (`plugins: [{ type: "local", path: <installed Cairn> }]`). No Copilot and no separate API key. Its connection to Chopin is outgoing, so Claude needs no tunnel.
 - **Chopin ships no first-party Planner backend.** Its agent connection (`wss://<origin>/api/v1/agent`, subprotocol `chopin.agent.v1`) is documented in `docs/agent-connection.md` of `githubnext/chopin`, with `@chopin/agent-link/client` as the reference TypeScript client. The bridge is that backend.
 - **The bridge is TypeScript with dependencies, Cairn is stdlib Python.** The bridge therefore lives in its own repository (`cairn-chopin`, my call), the way the benchmark does, and invokes Cairn's tools and skills rather than being part of them.
 - **Chopin decision limits.** A questionnaire carries 1 to 16 questions of up to 32 options; an option `preview` is Markdown up to 16,000 characters (image, Mermaid, small table, code sketch). A Cairn question with more than 32 alternatives is out of contract and is refused into the advisory rather than truncated.
@@ -57,10 +58,12 @@ Chopin is a research prototype that warns of breaking changes. The investment is
 ### The pieces
 
 ```
-teammates' browsers ──► Chopin server (hosted, Postgres, GitHub App, HARNESS=remote)
-                              ▲  outgoing WebSocket only
+teammates' browsers ──► Dev Tunnel (https://…devtunnels.ms, GitHub-login, persistent)
                               │
-maintainer's computer:  chopin connect --planner-command "cairn-chopin" -- claude-agent-acp
+maintainer's Mac:       Chopin server (Postgres in Docker, GitHub App, HARNESS=remote)
+                              ▲  WebSocket from the connector
+                              │
+                        chopin connect --planner-command "cairn-chopin" -- claude-agent-acp
                               │
                  cairn-chopin (Planner backend)  ── runs Claude (Agent SDK) with
                               │                     Chopin's host tools + Cairn's skills
@@ -176,7 +179,14 @@ Convergence (no open question left) is announced in Chat with Cairn's convergenc
 1. **Spike (throwaway).** Self-host Chopin with `HARNESS=remote`; connect the maintainer's machine with `claude-agent-acp`; a minimal `cairn-chopin` that attaches, answers a turn with Claude, and opens one hard-coded decision card. Proves the agent connection, the credential renewal, and Claude over ACP before anything real is built.
 2. **Questions and answers.** Cards from `open_questions.xml`, answers back as authored commits, reopen as revert, the "after answers are recorded" loop. The milestone document shows `requirements.md` read-only in spirit (human edits detected and surfaced, not yet folded).
 3. **The document.** Full two-way handling of the document: human edits turned into review inputs, the Decisions section re-rendered after each answer, visual previews on options.
-4. **Tasks and builds.** The task graph mirror and Build plan through `complete-task`.
+4. **Chat as evidence ("Jev listens, Cairn decides").** With `CONVERSATION_PLAN=on`, Chopin's classifier turns ordinary Chat into suggested cards: questions, options, reasons, support, and objections, each linked to the message it came from. The bridge never lets one of these become a recorded decision on its own:
+   - **A suggested question** is a candidate gap for `review-milestone-requirements`, which authors the real question, merging duplicates; Cairn stays the only author of questions.
+   - **A suggested option** outside the card's alternative set re-runs the alternatives pass for that question, through `strip` and a re-run, so the set stays covering.
+   - **Reasons, support, and objections** are evidence the recommendation pass weighs beside the principle store and cites.
+   - **Inferred agreement** records nothing; only Save is an answer.
+
+   When Cairn takes a suggestion in, the bridge closes the suggested card with a note naming Cairn's card, so teammates never see one question twice. **This slice needs one host-neutral Cairn capability first, built as its own Cairn milestone:** a per-milestone discussion-evidence input written only by a new Cairn tool, which review, alternatives, and recommendation read as cited evidence and never as decided. It names no Chopin and serves evidence pasted from anywhere.
+5. **Tasks and builds.** The task graph mirror and Build plan through `complete-task`.
 
 ## Decided
 
@@ -186,6 +196,9 @@ Convergence (no open question left) is announced in Chat with Cairn's convergenc
 - Investing in Chopin despite its prototype status (the user).
 - The Chopin page is a copy of `requirements.md` that Cairn keeps in sync; teammates' edits become review inputs, preserved in Chat (the user).
 - Cairn is the source of truth for how things work on the Claude side; the bridge only translates and invokes Cairn's skills (the user).
+- Everything runs on the maintainer's Mac, including the Chopin server, and teammates reach it through a GitHub-login Dev Tunnel; Claude is the installed Claude Code (the user).
+- The classifier is OpenAI for now, switching to Jev automatically once a Jev key is set up (the user).
+- Team chat feeds Cairn as evidence through Chopin's conversation cards, and Cairn stays the only author of questions and answers (discussed with the user; slice 4).
 
 ## My calls (check these)
 
